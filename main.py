@@ -265,7 +265,7 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
         font_size = 50
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
+        except Exception:
             font = ImageFont.load_default()
 
         # Wrap text
@@ -283,7 +283,6 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
         if current_line:
             lines.append(current_line.strip())
 
-        # Calculate text position (center bottom)
         y_offset = img_height - 300
         for i, line in enumerate(lines):
             bbox = draw.textbbox((0, 0), line, font=font)
@@ -291,18 +290,15 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
             x = (img_width - text_width) // 2
             y = y_offset + (i * 80)
 
-            # Draw black stroke
             for adj_x in [-2, -1, 0, 1, 2]:
                 for adj_y in [-2, -1, 0, 1, 2]:
                     draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
 
-            # Draw white text
             draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
         img.save(caption_image_path)
         print(f"Caption image created: {caption_image_path}")
 
-        # Create ffmpeg command with caption overlay and audio
         cmd = [
             "ffmpeg", "-y",
             "-i", video_path,
@@ -311,19 +307,19 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
             "-filter_complex", "[0:v]scale=1080:1920[v];[v][1:v]overlay=0:0:shortest=1[vout]",
             "-map", "[vout]", "-map", "0:a", "-shortest",
             "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-            "-b:a", "192k", output_path
+            "-b:a", "192k", output_path,
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
+
         if result.returncode == 0:
             print(f"Caption added successfully: {output_path}")
         else:
             print(f"FFmpeg caption error: {result.stderr}")
-        
+
         if os.path.exists(caption_image_path):
             os.remove(caption_image_path)
-        
+
         return result.returncode == 0
     except Exception as exc:
         print(f"Caption overlay exception: {exc}")
@@ -356,7 +352,6 @@ def stitch_video(processed_scenes):
 
     print(f"Total scenes with captions: {len(scene_outputs)}")
 
-    # Create concat list
     concat_list = "output/concat_list.txt"
     with open(concat_list, "w") as f:
         for path in scene_outputs:
@@ -367,16 +362,22 @@ def stitch_video(processed_scenes):
     final_output = "output/final_reel.mp4"
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_list, "-c", "copy", final_output
+        "-i", concat_list, "-c", "copy", final_output,
     ]
-    
-    print(f"Running final concat...")
+
+    print("Running final concat...")
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
+
     if result.returncode == 0:
         print(f"🎉 FINAL REEL READY: {final_output}")
     else:
         print(f"❌ FFmpeg concat error: {result.stderr}")
+
+    final_file = Path(final_output)
+    if not final_file.exists():
+        raise FileNotFoundError("final_reel.mp4 was not created")
+
+    return final_file
 
 
 def main():
@@ -386,7 +387,8 @@ def main():
     print(f"Storyboard generated with {len(storyboard.get('scenes', []))} scenes")
     scenes = build_assets(storyboard)
     print(f"Assets built: {len(scenes)} scenes")
-    stitch_video(scenes)
+    output_file = stitch_video(scenes)
+    print(f"Final output exists: {output_file.exists() if output_file else False}")
 
 
 if __name__ == "__main__":
