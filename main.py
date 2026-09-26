@@ -8,7 +8,8 @@ import requests
 import subprocess
 import edge_tts
 from google import genai
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+from PIL import Image, ImageDraw, ImageFont
+import tempfile
 
 # Retrieve API keys and provider settings securely
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -30,7 +31,7 @@ BACKUP_KEYWORDS = [
 ]
 
 used_video_ids = set()
-storyboard = None  # Global variable for storyboard
+storyboard = None
 
 
 def extract_json_from_text(text):
@@ -51,42 +52,6 @@ def extract_json_from_text(text):
         text = text[start : end + 1]
 
     return text.strip()
-
-
-def add_caption_to_clip(clip, text):
-    """Add text caption overlay to video clip with fade in/out effect."""
-    try:
-        txt_clip = (
-            TextClip(
-                text,
-                fontsize=32,
-                color="white",
-                font="DejaVu-Sans-Bold",
-                stroke_color="black",
-                stroke_width=2,
-                method="caption",
-                size=(int(clip.w * 0.85), None),
-            )
-            .set_position(("center", 0.82))
-            .set_duration(clip.duration)
-            .crossfadein(0.2)
-            .crossfadeout(0.2)
-        )
-        return CompositeVideoClip([clip, txt_clip])
-    except Exception as exc:
-        print(f"Caption overlay failed: {exc}. Returning original clip.")
-        return clip
-
-
-def apply_scene_transition(clip1, clip2, duration=0.6):
-    """Apply crossfade transition between two clips."""
-    try:
-        clip1_faded = clip1.crossfadeout(duration)
-        clip2_faded = clip2.crossfadein(duration)
-        return concatenate_videoclips([clip1_faded, clip2_faded], method="compose")
-    except Exception as exc:
-        print(f"Transition failed: {exc}. Concatenating without transition.")
-        return concatenate_videoclips([clip1, clip2])
 
 
 def offline_storyboard(topic):
@@ -281,66 +246,131 @@ def build_assets(storyboard):
 
         video_path = str(output_base / "videos" / f"scene_{s_id}.mp4")
         if fetch_pexels_video(keyword, video_path):
-            processed_scenes.append((s_id, video_path, audio_path))
+            processed_scenes.append((s_id, video_path, audio_path, narration))
 
     return processed_scenes
 
 
-def stitch_video(processed_scenes, storyboard):
-    """Create final reel with captions and transitions using moviepy."""
+def add_caption_overlay(video_path, audio_path, caption_text, output_path, duration=8):
+    """Add caption text overlay using ffmpeg."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            caption_image_path = tmp.name
+
+        # Create caption image using PIL
+        img_width, img_height = 1080, 1920
+        img = Image.new("RGBA", (img_width, img_height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        font_size = 50
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+
+        # Wrap text
+        max_chars_per_line = 20
+        lines = []
+        words = caption_text.split()
+        current_line = ""
+        for word in words:
+            if len(current_line) + len(word) + 1 <= max_chars_per_line:
+                current_line += word + " "
+            else:
+                if current_line:
+                    lines.append(current_line.strip())
+                current_line = word + " "
+        if current_line:
+            lines.append(current_line.strip())
+
+        # Calculate text position (center bottom)
+        y_offset = img_height - 300
+        for i, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+            x = (img_width - text_width) // 2
+            y = y_offset + (i * 80)
+
+            # Draw black stroke
+            for adj_x in [-2, -1, 0, 1, 2]:
+                for adj_y in [-2, -1, 0, 1, 2]:
+                    draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
+
+            # Draw white text
+            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+
+        img.save(caption_image_path)
+
+        # Get video duration
+        probe_cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1:novalue=1", video_path
+        ]
+        try:
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            video_duration = float(result.stdout.strip())
+        except:
+            video_duration = duration
+
+        # Create ffmpeg command with caption overlay and audio
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-loop", "1", "-i", caption_image_path,
+            "-c:v", "libx264", "-c:a", "aac",
+            "-filter_complex", f"[0:v]scale=1080:1920[v];[v][1:v]overlay=0:0:shortest=1[vout]",
+            "-map", "[vout]", "-map", "0:a", "-shortest",
+            "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+            "-b:a", "192k", output_path
+        ]
+
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.remove(caption_image_path)
+        return result.returncode == 0
+    except Exception as exc:
+        print(f"Caption overlay failed: {exc}")
+        return False
+
+
+def stitch_video(processed_scenes):
+    """Create final reel with captions and transitions using ffmpeg."""
     if not processed_scenes:
         print("❌ Error: No scenes were processed successfully.")
         return
 
-    scene_clips = []
+    scene_outputs = []
 
-    for s_id, v_path, a_path in processed_scenes:
+    for s_id, v_path, a_path, narration in processed_scenes:
         try:
-            video_clip = VideoFileClip(v_path)
-            # Load audio to maintain original soundtrack
-            audio_clip = VideoFileClip(a_path).audio
-            video_clip = video_clip.set_audio(audio_clip)
-
-            # Get narration text from storyboard
-            narration = next(
-                (scene["narration_text"] for scene in storyboard.get("scenes", []) if scene["scene_id"] == s_id),
-                "The universe is full of mysteries.",
-            )
-
-            # Add caption overlay
-            captioned_clip = add_caption_to_clip(video_clip, narration)
-            scene_clips.append(captioned_clip)
-            print(f"Scene {s_id} processed with caption.")
+            captioned_path = f"output/videos/captioned_{s_id}.mp4"
+            if add_caption_overlay(v_path, a_path, narration, captioned_path):
+                scene_outputs.append(captioned_path)
+                print(f"Scene {s_id} processed with caption.")
+            else:
+                print(f"Failed to add caption to scene {s_id}")
         except Exception as exc:
-            print(f"Scene clip processing failed for {s_id}: {exc}")
+            print(f"Scene processing failed for {s_id}: {exc}")
 
-    if not scene_clips:
-        print("❌ Error: No scene clips could be created.")
+    if not scene_outputs:
+        print("❌ Error: No scene videos could be created.")
         return
 
-    # Combine clips with transitions
-    print("Applying transitions between scenes...")
-    final_clip = scene_clips[0]
-    for clip in scene_clips[1:]:
-        final_clip = apply_scene_transition(final_clip, clip, duration=0.6)
+    # Create concat list
+    concat_list = "output/concat_list.txt"
+    with open(concat_list, "w") as f:
+        for path in scene_outputs:
+            f.write(f"file '{os.path.abspath(path)}'\n")
 
-    # Export final video
     final_output = "output/final_reel.mp4"
-    print(f"Exporting final reel to {final_output}...")
-    try:
-        final_clip.write_videofile(
-            final_output,
-            fps=24,
-            codec="libx264",
-            audio_codec="aac",
-            bitrate="5000k",
-            threads=2,
-            logger=None,
-            verbose=False,
-        )
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", concat_list, "-c", "copy", final_output
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode == 0:
         print(f"🎉 FINAL REEL READY: {final_output}")
-    except Exception as exc:
-        print(f"❌ Error exporting final reel: {exc}")
+    else:
+        print("❌ Error: Final reel assembly failed.")
 
 
 def main():
@@ -348,7 +378,7 @@ def main():
     print("Starting Autonomous Reel Production Engine...")
     storyboard = generate_storyboard("What happens at the edge of the observable universe?")
     scenes = build_assets(storyboard)
-    stitch_video(scenes, storyboard)
+    stitch_video(scenes)
 
 
 if __name__ == "__main__":
