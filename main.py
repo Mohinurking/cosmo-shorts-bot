@@ -9,10 +9,12 @@ import subprocess
 import edge_tts
 from google import genai
 
-# Retrieve API keys securely
+# Retrieve API keys and provider settings securely
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-3-27b-it:free")
 
 # Initialize Gemini Client using modern SDK
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -49,6 +51,40 @@ def extract_json_from_text(text):
     return text.strip()
 
 
+def offline_storyboard(topic):
+    narrations = [
+        "What lies beyond the edge of everything we can see?",
+        "The observable universe is not the entire universe. It is only the region whose light has reached us.",
+        "Far away, galaxies are moving so quickly that their light will never catch up with cosmic expansion.",
+        "Beyond that horizon may be trillions of galaxies, hidden forever from our view.",
+        "The strange truth is that the edge is not a wall. It is a limit on what information can reach us.",
+        "And somewhere beyond it, the universe may continue without an edge at all.",
+        "The observable universe is only our cosmic bubble. What exists outside it remains one of space's greatest mysteries.",
+    ]
+    keywords = [
+        "deep space galaxy",
+        "observable universe animation",
+        "galaxy cluster space",
+        "expanding universe",
+        "cosmic horizon",
+        "deep space stars",
+        "spiral galaxy vertical",
+    ]
+    return {
+        "project_name": "Cosmology_Reels",
+        "topic": topic,
+        "scenes": [
+            {
+                "scene_id": index,
+                "duration_seconds": 8,
+                "narration_text": narration,
+                "search_keyword": keyword,
+            }
+            for index, (narration, keyword) in enumerate(zip(narrations, keywords), 1)
+        ],
+    }
+
+
 def generate_storyboard(topic):
     system_prompt = """
     You are an expert video producer for US Facebook Reels / Youtube Shorts.
@@ -71,12 +107,11 @@ def generate_storyboard(topic):
     """
     user_prompt = f"Generate a storyboard about: {topic}"
 
-    # 1. Try Gemini first
     if client_gemini:
         try:
-            print("Attempting with Gemini API (gemini-2.0-flash)...")
+            print(f"Attempting with Gemini API ({GEMINI_MODEL})...")
             response = client_gemini.models.generate_content(
-                model="gemini-2.0-flash",
+                model=GEMINI_MODEL,
                 contents=f"{system_prompt}\n\n{user_prompt}",
                 config={"response_mime_type": "application/json"},
             )
@@ -88,37 +123,44 @@ def generate_storyboard(topic):
             data = json.loads(extract_json_from_text(content))
             if isinstance(data, dict) and "scenes" in data:
                 return data
-        except Exception as e:
-            print(f"Gemini failed: {e}")
+        except Exception as exc:
+            print(f"Gemini failed: {exc}")
 
-    # 2. Try OpenRouter fallback second
     if OPENROUTER_API_KEY:
         try:
-            print("Attempting with OpenRouter fallback...")
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            data = {
-                "model": "google/gemma-2-9b-it:free",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            res = requests.post(url, headers=headers, json=data, timeout=30)
-            res.raise_for_status()
-            res_json = res.json()
+            print(f"Attempting with OpenRouter ({OPENROUTER_MODEL})...")
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/Mohinurking/cosmo-shorts-bot",
+                    "X-Title": "Cosmo Shorts Bot",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=30,
+            )
+            if not response.ok:
+                raise RuntimeError(
+                    f"HTTP {response.status_code}: {response.text[:1000]}"
+                )
 
-            content = res_json["choices"][0]["message"]["content"]
+            content = response.json()["choices"][0]["message"]["content"]
             data = json.loads(extract_json_from_text(content))
             if isinstance(data, dict) and "scenes" in data:
                 return data
-        except Exception as e:
-            print(f"OpenRouter failed: {e}")
+        except Exception as exc:
+            print(f"OpenRouter failed: {exc}")
 
-    raise ValueError("All AI models and fallbacks failed to generate content.")
+    print("AI providers unavailable; using offline storyboard fallback.")
+    return offline_storyboard(topic)
 
 
 async def generate_voiceover(text, output_file):
@@ -175,8 +217,8 @@ def fetch_pexels_video(keyword, output_file):
 
                 used_video_ids.add(v_id)
                 return True
-        except Exception as e:
-            print(f"Fetch error: {e}")
+        except Exception as exc:
+            print(f"Fetch error: {exc}")
     return False
 
 
@@ -214,26 +256,9 @@ def stitch_video(processed_scenes):
     for s_id, v_path, a_path in processed_scenes:
         merged_path = f"output/videos/merged_{s_id}.mp4"
         cmd = [
-            "ffmpeg",
-            "-y",
-            "-stream_loop",
-            "-1",
-            "-i",
-            v_path,
-            "-i",
-            a_path,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-pix_fmt",
-            "yuv420p",
-            "-shortest",
-            merged_path,
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", v_path, "-i", a_path,
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", merged_path,
         ]
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if result.returncode != 0:
@@ -247,24 +272,15 @@ def stitch_video(processed_scenes):
 
     concat_list = "output/concat_list.txt"
     with open(concat_list, "w") as f:
-        for p in scene_outputs:
-            f.write(f"file '{os.path.abspath(p)}'\n")
+        for path in scene_outputs:
+            f.write(f"file '{os.path.abspath(path)}'\n")
 
     final_output = "output/final_reel.mp4"
-    concat_cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        concat_list,
-        "-c",
-        "copy",
-        final_output,
-    ]
-    result = subprocess.run(concat_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_output],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     if result.returncode == 0:
         print(f"🎉 FINAL REEL READY: {final_output}")
     else:
