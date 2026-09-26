@@ -1,6 +1,4 @@
 google-genai
 requests
 edge-tts
-moviepy
-imageio
-imageio-ffmpeg
+Pillow
