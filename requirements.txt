@@ -1,4 +1,3 @@
-google-genai
-groq
+google-generativeai
 requests
 edge-tts
