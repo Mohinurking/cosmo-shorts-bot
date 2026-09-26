@@ -252,7 +252,7 @@ def build_assets(storyboard):
 
 
 def add_caption_overlay(video_path, audio_path, caption_text, output_path, duration=8):
-    """Add caption text overlay using ffmpeg."""
+    """Add caption text overlay using ffmpeg and PIL."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             caption_image_path = tmp.name
@@ -300,17 +300,7 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
             draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
         img.save(caption_image_path)
-
-        # Get video duration
-        probe_cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1:novalue=1", video_path
-        ]
-        try:
-            result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
-            video_duration = float(result.stdout.strip())
-        except:
-            video_duration = duration
+        print(f"Caption image created: {caption_image_path}")
 
         # Create ffmpeg command with caption overlay and audio
         cmd = [
@@ -318,22 +308,30 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
             "-i", video_path,
             "-loop", "1", "-i", caption_image_path,
             "-c:v", "libx264", "-c:a", "aac",
-            "-filter_complex", f"[0:v]scale=1080:1920[v];[v][1:v]overlay=0:0:shortest=1[vout]",
+            "-filter_complex", "[0:v]scale=1080:1920[v];[v][1:v]overlay=0:0:shortest=1[vout]",
             "-map", "[vout]", "-map", "0:a", "-shortest",
             "-pix_fmt", "yuv420p", "-preset", "ultrafast",
             "-b:a", "192k", output_path
         ]
 
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.remove(caption_image_path)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"Caption added successfully: {output_path}")
+        else:
+            print(f"FFmpeg caption error: {result.stderr}")
+        
+        if os.path.exists(caption_image_path):
+            os.remove(caption_image_path)
+        
         return result.returncode == 0
     except Exception as exc:
-        print(f"Caption overlay failed: {exc}")
+        print(f"Caption overlay exception: {exc}")
         return False
 
 
 def stitch_video(processed_scenes):
-    """Create final reel with captions and transitions using ffmpeg."""
+    """Create final reel with captions using ffmpeg."""
     if not processed_scenes:
         print("❌ Error: No scenes were processed successfully.")
         return
@@ -343,17 +341,20 @@ def stitch_video(processed_scenes):
     for s_id, v_path, a_path, narration in processed_scenes:
         try:
             captioned_path = f"output/videos/captioned_{s_id}.mp4"
+            print(f"Processing scene {s_id}...")
             if add_caption_overlay(v_path, a_path, narration, captioned_path):
                 scene_outputs.append(captioned_path)
-                print(f"Scene {s_id} processed with caption.")
+                print(f"✅ Scene {s_id} processed with caption.")
             else:
-                print(f"Failed to add caption to scene {s_id}")
+                print(f"❌ Failed to add caption to scene {s_id}")
         except Exception as exc:
-            print(f"Scene processing failed for {s_id}: {exc}")
+            print(f"Scene processing exception {s_id}: {exc}")
 
     if not scene_outputs:
         print("❌ Error: No scene videos could be created.")
         return
+
+    print(f"Total scenes with captions: {len(scene_outputs)}")
 
     # Create concat list
     concat_list = "output/concat_list.txt"
@@ -361,23 +362,30 @@ def stitch_video(processed_scenes):
         for path in scene_outputs:
             f.write(f"file '{os.path.abspath(path)}'\n")
 
+    print(f"Concat list created: {concat_list}")
+
     final_output = "output/final_reel.mp4"
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", concat_list, "-c", "copy", final_output
     ]
-    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    print(f"Running final concat...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
     if result.returncode == 0:
         print(f"🎉 FINAL REEL READY: {final_output}")
     else:
-        print("❌ Error: Final reel assembly failed.")
+        print(f"❌ FFmpeg concat error: {result.stderr}")
 
 
 def main():
     global storyboard
     print("Starting Autonomous Reel Production Engine...")
     storyboard = generate_storyboard("What happens at the edge of the observable universe?")
+    print(f"Storyboard generated with {len(storyboard.get('scenes', []))} scenes")
     scenes = build_assets(storyboard)
+    print(f"Assets built: {len(scenes)} scenes")
     stitch_video(scenes)
 
 
