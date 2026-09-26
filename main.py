@@ -8,6 +8,7 @@ import requests
 import subprocess
 import edge_tts
 from google import genai
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
 
 # Retrieve API keys and provider settings securely
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -29,6 +30,7 @@ BACKUP_KEYWORDS = [
 ]
 
 used_video_ids = set()
+storyboard = None  # Global variable for storyboard
 
 
 def extract_json_from_text(text):
@@ -51,7 +53,44 @@ def extract_json_from_text(text):
     return text.strip()
 
 
+def add_caption_to_clip(clip, text):
+    """Add text caption overlay to video clip with fade in/out effect."""
+    try:
+        txt_clip = (
+            TextClip(
+                text,
+                fontsize=32,
+                color="white",
+                font="DejaVu-Sans-Bold",
+                stroke_color="black",
+                stroke_width=2,
+                method="caption",
+                size=(int(clip.w * 0.85), None),
+            )
+            .set_position(("center", 0.82))
+            .set_duration(clip.duration)
+            .crossfadein(0.2)
+            .crossfadeout(0.2)
+        )
+        return CompositeVideoClip([clip, txt_clip])
+    except Exception as exc:
+        print(f"Caption overlay failed: {exc}. Returning original clip.")
+        return clip
+
+
+def apply_scene_transition(clip1, clip2, duration=0.6):
+    """Apply crossfade transition between two clips."""
+    try:
+        clip1_faded = clip1.crossfadeout(duration)
+        clip2_faded = clip2.crossfadein(duration)
+        return concatenate_videoclips([clip1_faded, clip2_faded], method="compose")
+    except Exception as exc:
+        print(f"Transition failed: {exc}. Concatenating without transition.")
+        return concatenate_videoclips([clip1, clip2])
+
+
 def offline_storyboard(topic):
+    """Last-resort storyboard so a temporary AI outage does not fail the job."""
     narrations = [
         "What lies beyond the edge of everything we can see?",
         "The observable universe is not the entire universe. It is only the region whose light has reached us.",
@@ -247,51 +286,69 @@ def build_assets(storyboard):
     return processed_scenes
 
 
-def stitch_video(processed_scenes):
+def stitch_video(processed_scenes, storyboard):
+    """Create final reel with captions and transitions using moviepy."""
     if not processed_scenes:
         print("❌ Error: No scenes were processed successfully.")
         return
 
-    scene_outputs = []
-    for s_id, v_path, a_path in processed_scenes:
-        merged_path = f"output/videos/merged_{s_id}.mp4"
-        cmd = [
-            "ffmpeg", "-y", "-stream_loop", "-1", "-i", v_path, "-i", a_path,
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-            "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", merged_path,
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if result.returncode != 0:
-            print(f"ffmpeg merge failed for scene {s_id}")
-            continue
-        scene_outputs.append(merged_path)
+    scene_clips = []
 
-    if not scene_outputs:
-        print("❌ Error: No scene videos could be merged.")
+    for s_id, v_path, a_path in processed_scenes:
+        try:
+            video_clip = VideoFileClip(v_path)
+            # Load audio to maintain original soundtrack
+            audio_clip = VideoFileClip(a_path).audio
+            video_clip = video_clip.set_audio(audio_clip)
+
+            # Get narration text from storyboard
+            narration = next(
+                (scene["narration_text"] for scene in storyboard.get("scenes", []) if scene["scene_id"] == s_id),
+                "The universe is full of mysteries.",
+            )
+
+            # Add caption overlay
+            captioned_clip = add_caption_to_clip(video_clip, narration)
+            scene_clips.append(captioned_clip)
+            print(f"Scene {s_id} processed with caption.")
+        except Exception as exc:
+            print(f"Scene clip processing failed for {s_id}: {exc}")
+
+    if not scene_clips:
+        print("❌ Error: No scene clips could be created.")
         return
 
-    concat_list = "output/concat_list.txt"
-    with open(concat_list, "w") as f:
-        for path in scene_outputs:
-            f.write(f"file '{os.path.abspath(path)}'\n")
+    # Combine clips with transitions
+    print("Applying transitions between scenes...")
+    final_clip = scene_clips[0]
+    for clip in scene_clips[1:]:
+        final_clip = apply_scene_transition(final_clip, clip, duration=0.6)
 
+    # Export final video
     final_output = "output/final_reel.mp4"
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_output],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode == 0:
+    print(f"Exporting final reel to {final_output}...")
+    try:
+        final_clip.write_videofile(
+            final_output,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            bitrate="5000k",
+            threads=2,
+            logger=None,
+            verbose=False,
+        )
         print(f"🎉 FINAL REEL READY: {final_output}")
-    else:
-        print("❌ Error: Final reel assembly failed.")
+    except Exception as exc:
+        print(f"❌ Error exporting final reel: {exc}")
 
 
 def main():
+    global storyboard
     print("Starting Autonomous Reel Production Engine...")
     storyboard = generate_storyboard("What happens at the edge of the observable universe?")
     scenes = build_assets(storyboard)
-    stitch_video(scenes)
+    stitch_video(scenes, storyboard)
 
 
 if __name__ == "__main__":
