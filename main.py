@@ -881,3 +881,29 @@ def main():
 
 if __name__ == "__main__":
     main()
+def get_random_topic():
+    """Generate random space mystery topic."""
+    topics = [
+        "What happens at the edge of the observable universe?",
+        "How do black holes bend space and time?",
+        "What is dark matter made of?",
+        "Could there be parallel universes?",
+        "What happens inside a wormhole?",
+        "Is time travel actually possible?",
+        "What are cosmic strings in space?",
+        "How do neutron stars form?",
+        "What is the fate of the universe?",
+        "Could life exist on exoplanets?",
+        "What is the cosmic microwave background?",
+        "How do supernovae create heavy elements?",
+        "What is the nature of dark energy?",
+        "Could consciousness affect the universe?",
+        "What lies beyond the Milky Way?",
+        "How do galaxies collide and merge?",
+        "What is the Planck scale?",
+        "Could the Big Bang happen again?",
+        "What are gravitational waves?",
+        "Is the universe finite or infinite?",
+    ]
+    
+    return random.choice(topics)
