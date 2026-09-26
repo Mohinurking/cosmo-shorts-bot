@@ -1,23 +1,21 @@
 import os
 import json
-import time
 import random
 import asyncio
 import requests
 import subprocess
 import edge_tts
-from google import genai
-from groq import Groq
+import google.generativeai as genai
 
-# Retrieve API keys securely from Environment / GitHub Secrets
+# Retrieve API keys securely
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
-# Initialize AI Clients
-client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+# Configure Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 BACKUP_KEYWORDS = [
     "deep space 4k", "black hole accretion", "spinning galaxy vertical", 
@@ -58,36 +56,23 @@ def generate_storyboard(topic):
     """
     user_prompt = f"Generate a storyboard about: {topic}"
     
-    # 1. Try Gemini First
-    if client_gemini:
+    # 1. Try Gemini First (using stable google-generativeai)
+    if GEMINI_API_KEY:
         try:
             print("Attempting with Gemini API (gemini-1.5-flash)...")
-            response = client_gemini.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=f"{system_prompt}\n\n{user_prompt}",
-                config={"response_mime_type": "application/json"}
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system_prompt
+            )
+            response = model.generate_content(
+                user_prompt,
+                generation_config={"response_mime_type": "application/json"}
             )
             return json.loads(extract_json_from_text(response.text))
         except Exception as e:
             print(f"Gemini failed: {e}")
 
-    # 2. Try Groq Second (Ultra-fast & Free)
-    if client_groq:
-        try:
-            print("Attempting with Groq API (llama-3.3-70b-versatile)...")
-            completion = client_groq.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"}
-            )
-            return json.loads(extract_json_from_text(completion.choices[0].message.content))
-        except Exception as e:
-            print(f"Groq failed: {e}")
-
-    # 3. Try OpenRouter Fallback Third
+    # 2. Try OpenRouter Fallback Second
     if OPENROUTER_API_KEY:
         try:
             print("Attempting with OpenRouter fallback...")
