@@ -1,24 +1,27 @@
-import os
-import json
-import random
 import asyncio
+import json
+import os
+import random
+import subprocess
+import tempfile
 from pathlib import Path
 
-import requests
-import subprocess
 import edge_tts
-from google import genai
+import requests
 from PIL import Image, ImageDraw, ImageFont
-import tempfile
+from google import genai
 
-# Retrieve API keys and provider settings securely
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-3-27b-it:free")
 
-# Initialize Gemini Client using modern SDK
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+OPENROUTER_MODEL = os.environ.get(
+    "OPENROUTER_MODEL",
+    "google/gemma-3-27b-it:free",
+)
+
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 BACKUP_KEYWORDS = [
@@ -31,40 +34,42 @@ BACKUP_KEYWORDS = [
 ]
 
 used_video_ids = set()
-storyboard = None
 
 
 def extract_json_from_text(text):
-    if text is None:
+    if not text:
         raise ValueError("Empty AI response.")
 
     text = text.strip()
+
     if text.startswith("```json"):
         text = text[7:]
     elif text.startswith("```"):
         text = text[3:]
+
     if text.endswith("```"):
         text = text[:-3]
 
     start = text.find("{")
     end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        text = text[start : end + 1]
 
-    return text.strip()
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in AI response.")
+
+    return text[start : end + 1].strip()
 
 
 def offline_storyboard(topic):
-    """Last-resort storyboard so a temporary AI outage does not fail the job."""
     narrations = [
         "What lies beyond the edge of everything we can see?",
-        "The observable universe is not the entire universe. It is only the region whose light has reached us.",
-        "Far away, galaxies are moving so quickly that their light will never catch up with cosmic expansion.",
-        "Beyond that horizon may be trillions of galaxies, hidden forever from our view.",
-        "The strange truth is that the edge is not a wall. It is a limit on what information can reach us.",
-        "And somewhere beyond it, the universe may continue without an edge at all.",
-        "The observable universe is only our cosmic bubble. What exists outside it remains one of space's greatest mysteries.",
+        "The observable universe is only the region whose light has reached us.",
+        "Far away, galaxies are moving so quickly that their light may never reach us.",
+        "Beyond that horizon could be trillions of galaxies hidden forever from our view.",
+        "The edge is not a wall. It is a limit on what information can reach us.",
+        "Somewhere beyond it, the universe may continue without an edge at all.",
+        "The observable universe is only our cosmic bubble.",
     ]
+
     keywords = [
         "deep space galaxy",
         "observable universe animation",
@@ -74,6 +79,7 @@ def offline_storyboard(topic):
         "deep space stars",
         "spiral galaxy vertical",
     ]
+
     return {
         "project_name": "Cosmology_Reels",
         "topic": topic,
@@ -84,36 +90,44 @@ def offline_storyboard(topic):
                 "narration_text": narration,
                 "search_keyword": keyword,
             }
-            for index, (narration, keyword) in enumerate(zip(narrations, keywords), 1)
+            for index, (narration, keyword) in enumerate(
+                zip(narrations, keywords),
+                start=1,
+            )
         ],
     }
 
 
 def generate_storyboard(topic):
     system_prompt = """
-    You are an expert video producer for US Facebook Reels / Youtube Shorts.
-    Create a 60-second vertical (9:16) script about Space Mysteries.
-    Target Audience: USA. Language: English. Tone: Atmospheric, cinematic, deep.
+You are an expert video producer for US Facebook Reels and YouTube Shorts.
 
-    Return STRICTLY a JSON object with this structure:
+Create a 60-second vertical 9:16 script about Space Mysteries.
+Target audience: USA.
+Language: English.
+Tone: atmospheric, cinematic, and deep.
+
+Return only valid JSON:
+{
+  "project_name": "Cosmology_Reels",
+  "topic": "string",
+  "scenes": [
     {
-      "project_name": "Cosmology_Reels",
-      "topic": "string",
-      "scenes": [
-        {
-          "scene_id": 1,
-          "duration_seconds": 5,
-          "narration_text": "Engaging hook line in English...",
-          "search_keyword": "black hole accretion disk"
-        }
-      ]
+      "scene_id": 1,
+      "duration_seconds": 5,
+      "narration_text": "Engaging narration in English",
+      "search_keyword": "black hole accretion disk"
     }
-    """
+  ]
+}
+"""
+
     user_prompt = f"Generate a storyboard about: {topic}"
 
     if client_gemini:
         try:
-            print(f"Attempting with Gemini API ({GEMINI_MODEL})...")
+            print(f"Trying Gemini: {GEMINI_MODEL}")
+
             response = client_gemini.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=f"{system_prompt}\n\n{user_prompt}",
@@ -121,18 +135,22 @@ def generate_storyboard(topic):
             )
 
             content = getattr(response, "text", None)
+
             if not content:
                 content = response.candidates[0].content.parts[0].text
 
             data = json.loads(extract_json_from_text(content))
-            if isinstance(data, dict) and "scenes" in data:
+
+            if isinstance(data, dict) and data.get("scenes"):
                 return data
+
         except Exception as exc:
             print(f"Gemini failed: {exc}")
 
     if OPENROUTER_API_KEY:
         try:
-            print(f"Attempting with OpenRouter ({OPENROUTER_MODEL})...")
+            print(f"Trying OpenRouter: {OPENROUTER_MODEL}")
+
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -151,245 +169,367 @@ def generate_storyboard(topic):
                 },
                 timeout=30,
             )
+
             if not response.ok:
                 raise RuntimeError(
-                    f"HTTP {response.status_code}: {response.text[:1000]}"
+                    f"HTTP {response.status_code}: {response.text[:500]}"
                 )
 
             content = response.json()["choices"][0]["message"]["content"]
             data = json.loads(extract_json_from_text(content))
-            if isinstance(data, dict) and "scenes" in data:
+
+            if isinstance(data, dict) and data.get("scenes"):
                 return data
+
         except Exception as exc:
             print(f"OpenRouter failed: {exc}")
 
-    print("AI providers unavailable; using offline storyboard fallback.")
+    print("Using offline storyboard fallback.")
     return offline_storyboard(topic)
 
 
 async def generate_voiceover(text, output_file):
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
-    await communicate.save(str(output_path))
+
+    voice = edge_tts.Communicate(
+        text,
+        "en-US-ChristopherNeural",
+    )
+    await voice.save(str(output_path))
 
 
 def fetch_pexels_video(keyword, output_file):
-    global used_video_ids
     if not PEXELS_API_KEY:
+        print("PEXELS_API_KEY is missing.")
         return False
 
     headers = {"Authorization": PEXELS_API_KEY}
-    search_terms = [keyword] + random.sample(BACKUP_KEYWORDS, len(BACKUP_KEYWORDS))
+    terms = [keyword] + random.sample(
+        BACKUP_KEYWORDS,
+        len(BACKUP_KEYWORDS),
+    )
 
-    for term in search_terms:
-        page = random.randint(1, 5)
-        query = requests.utils.quote(term)
-        url = (
-            f"https://api.pexels.com/videos/search?query={query}"
-            f"&orientation=portrait&per_page=10&page={page}"
-        )
+    for term in terms:
         try:
-            res = requests.get(url, headers=headers, timeout=15)
-            res.raise_for_status()
-            videos = res.json().get("videos", [])
+            page = random.randint(1, 5)
+            url = (
+                "https://api.pexels.com/videos/search"
+                f"?query={requests.utils.quote(term)}"
+                f"&orientation=portrait&per_page=10&page={page}"
+            )
 
-            for video in videos:
-                v_id = video.get("id")
-                if v_id in used_video_ids:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=20,
+            )
+            response.raise_for_status()
+
+            for video in response.json().get("videos", []):
+                video_id = video.get("id")
+
+                if video_id in used_video_ids:
                     continue
 
-                v_files = video.get("video_files") or []
-                if not v_files:
+                files = video.get("video_files") or []
+
+                if not files:
                     continue
 
-                hd_file = next(
-                    (f for f in v_files if f.get("height", 0) >= 1280),
-                    v_files[0],
+                selected = next(
+                    (
+                        item
+                        for item in files
+                        if item.get("height", 0) >= 1280
+                    ),
+                    files[0],
                 )
-                video_url = hd_file.get("link")
+
+                video_url = selected.get("link")
+
                 if not video_url:
                     continue
 
-                print(f"Downloading Pexels clip (ID: {v_id}) for '{term}'...")
-                clip_response = requests.get(video_url, timeout=30)
+                print(f"Downloading clip for: {term}")
+
+                clip_response = requests.get(
+                    video_url,
+                    timeout=40,
+                )
                 clip_response.raise_for_status()
 
                 output_path = Path(output_file)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_bytes(clip_response.content)
 
-                used_video_ids.add(v_id)
+                used_video_ids.add(video_id)
                 return True
+
         except Exception as exc:
-            print(f"Fetch error: {exc}")
+            print(f"Pexels fetch failed: {exc}")
+
     return False
 
 
 def build_assets(storyboard):
-    output_base = Path("output")
-    (output_base / "videos").mkdir(parents=True, exist_ok=True)
-    (output_base / "audio").mkdir(parents=True, exist_ok=True)
-    processed_scenes = []
+    output_dir = Path("output")
+    videos_dir = output_dir / "videos"
+    audio_dir = output_dir / "audio"
+
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    processed = []
 
     for scene in storyboard.get("scenes", []):
-        s_id = scene["scene_id"]
+        scene_id = scene["scene_id"]
         narration = scene["narration_text"]
         keyword = scene.get("search_keyword", "space galaxy")
 
-        audio_path = str(output_base / "audio" / f"scene_{s_id}.mp3")
+        audio_path = audio_dir / f"scene_{scene_id}.mp3"
+        video_path = videos_dir / f"scene_{scene_id}.mp4"
+
         try:
-            asyncio.run(generate_voiceover(narration, audio_path))
+            asyncio.run(
+                generate_voiceover(
+                    narration,
+                    audio_path,
+                )
+            )
         except Exception as exc:
-            print(f"Voiceover generation failed for scene {s_id}: {exc}")
+            print(f"Voiceover failed for scene {scene_id}: {exc}")
             continue
 
-        video_path = str(output_base / "videos" / f"scene_{s_id}.mp4")
         if fetch_pexels_video(keyword, video_path):
-            processed_scenes.append((s_id, video_path, narration))
+            processed.append(
+                (
+                    scene_id,
+                    str(video_path),
+                    str(audio_path),
+                    narration,
+                )
+            )
 
-    return processed_scenes
+    return processed
 
 
-def add_caption_overlay(video_path, caption_text, output_path):
-    """Add caption text overlay using ffmpeg and PIL."""
+def create_caption_image(text):
+    image_width = 1080
+    image_height = 1920
+
+    image = Image.new(
+        "RGBA",
+        (image_width, image_height),
+        (0, 0, 0, 0),
+    )
+    draw = ImageDraw.Draw(image)
+
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            caption_image_path = tmp.name
+        font = ImageFont.truetype(font_path, 50)
+    except Exception:
+        font = ImageFont.load_default()
 
-        # Create caption image using PIL
-        img_width, img_height = 1080, 1920
-        img = Image.new("RGBA", (img_width, img_height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
+    lines = []
+    current = ""
 
-        font_size = 50
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except Exception:
-            font = ImageFont.load_default()
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
 
-        # Wrap text
-        max_chars_per_line = 20
-        lines = []
-        words = caption_text.split()
-        current_line = ""
-        for word in words:
-            if len(current_line) + len(word) + 1 <= max_chars_per_line:
-                current_line += word + " "
-            else:
-                if current_line:
-                    lines.append(current_line.strip())
-                current_line = word + " "
-        if current_line:
-            lines.append(current_line.strip())
+        if len(candidate) <= 26:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
 
-        y_offset = img_height - 300
-        for i, line in enumerate(lines):
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_width = bbox[2] - bbox[0]
-            x = (img_width - text_width) // 2
-            y = y_offset + (i * 80)
+    if current:
+        lines.append(current)
 
-            for adj_x in [-2, -1, 0, 1, 2]:
-                for adj_y in [-2, -1, 0, 1, 2]:
-                    draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
+    line_height = 65
+    total_height = len(lines) * line_height
+    start_y = image_height - total_height - 180
 
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+    for index, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_width = bbox[2] - bbox[0]
 
-        img.save(caption_image_path)
+        x = (image_width - text_width) // 2
+        y = start_y + (index * line_height)
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-loop", "1", "-i", caption_image_path,
-            "-c:v", "libx264", "-c:a", "aac",
-            "-filter_complex", "[0:v]scale=1080:1920[v];[v][1:v]overlay=0:0:shortest=1[vout]",
-            "-map", "[vout]", "-map", "0:a", "-shortest",
-            "-pix_fmt", "yuv420p", "-preset", "ultrafast",
-            "-b:a", "192k", output_path,
+        draw.text(
+            (x + 3, y + 3),
+            line,
+            font=font,
+            fill=(0, 0, 0, 255),
+        )
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill=(255, 255, 255, 255),
+        )
+
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".png",
+        delete=False,
+    )
+    temp_file.close()
+
+    image.save(temp_file.name)
+    return temp_file.name
+
+
+def add_caption_overlay(video_path, audio_path, caption_text, output_path):
+    caption_image = None
+
+    try:
+        caption_image = create_caption_image(caption_text)
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+            "-loop",
+            "1",
+            "-i",
+            caption_image,
+            "-i",
+            audio_path,
+            "-filter_complex",
+            (
+                "[0:v]scale=1080:1920,"
+                "setsar=1[base];"
+                "[base][1:v]overlay=0:0:shortest=1[vout]"
+            ),
+            "-map",
+            "[vout]",
+            "-map",
+            "2:a:0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-pix_fmt",
+            "yuv420p",
+            "-shortest",
+            output_path,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+        )
 
-        if result.returncode == 0:
-            print(f"✅ Caption added: {output_path}")
-        else:
-            print(f"❌ FFmpeg error: {result.stderr[:500]}")
+        if result.returncode != 0:
+            print("Caption FFmpeg error:")
+            print(result.stderr[-2000:])
+            return False
 
-        if os.path.exists(caption_image_path):
-            os.remove(caption_image_path)
+        if not Path(output_path).exists():
+            print(f"Caption output missing: {output_path}")
+            return False
 
-        return result.returncode == 0
+        return True
+
     except Exception as exc:
-        print(f"❌ Caption exception: {exc}")
-        import traceback
-        traceback.print_exc()
+        print(f"Caption generation failed: {exc}")
         return False
+
+    finally:
+        if caption_image and os.path.exists(caption_image):
+            os.remove(caption_image)
 
 
 def stitch_video(processed_scenes):
-    """Create final reel with captions using ffmpeg."""
     if not processed_scenes:
-        print("❌ Error: No scenes were processed successfully.")
-        return
+        raise RuntimeError("No scenes were processed.")
 
     scene_outputs = []
 
-    for s_id, v_path, narration in processed_scenes:
-        try:
-            captioned_path = f"output/videos/captioned_{s_id}.mp4"
-            print(f"Processing scene {s_id}...")
-            if add_caption_overlay(v_path, narration, captioned_path):
-                scene_outputs.append(captioned_path)
-                print(f"✅ Scene {s_id} done.")
-            else:
-                print(f"❌ Failed to add caption to scene {s_id}")
-        except Exception as exc:
-            print(f"Scene exception {s_id}: {exc}")
+    for scene_id, video_path, audio_path, narration in processed_scenes:
+        output_path = f"output/videos/captioned_{scene_id}.mp4"
+
+        print(f"Adding caption to scene {scene_id}")
+
+        if add_caption_overlay(
+            video_path,
+            audio_path,
+            narration,
+            output_path,
+        ):
+            scene_outputs.append(output_path)
 
     if not scene_outputs:
-        print("❌ Error: No scene videos could be created.")
-        return
+        raise RuntimeError("No captioned scenes were created.")
 
-    print(f"Total scenes: {len(scene_outputs)}")
+    concat_list = Path("output/concat_list.txt")
 
-    concat_list = "output/concat_list.txt"
-    with open(concat_list, "w") as f:
+    with concat_list.open("w") as file:
         for path in scene_outputs:
-            f.write(f"file '{os.path.abspath(path)}'\n")
+            file.write(f"file '{Path(path).resolve()}'\n")
 
-    print(f"Concat list ready.")
+    final_output = Path("output/final_reel.mp4")
 
-    final_output = "output/final_reel.mp4"
-    cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_list, "-c", "copy", final_output,
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-c",
+        "copy",
+        str(final_output),
     ]
 
-    print("Running final concat...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+    )
 
-    if result.returncode == 0:
-        print(f"🎉 FINAL REEL READY!")
-    else:
-        print(f"❌ FFmpeg concat error: {result.stderr[:500]}")
+    if result.returncode != 0:
+        print("Final concat FFmpeg error:")
+        print(result.stderr[-3000:])
+        raise RuntimeError("Final reel concat failed.")
 
-    final_file = Path(final_output)
-    if not final_file.exists():
-        raise FileNotFoundError("final_reel.mp4 was not created")
+    if not final_output.exists() or final_output.stat().st_size == 0:
+        raise RuntimeError("final_reel.mp4 was not created.")
 
-    return final_file
+    print(f"FINAL REEL READY: {final_output}")
+    return final_output
 
 
 def main():
-    global storyboard
     print("Starting Autonomous Reel Production Engine...")
-    storyboard = generate_storyboard("What happens at the edge of the observable universe?")
-    print(f"Storyboard: {len(storyboard.get('scenes', []))} scenes")
-    scenes = build_assets(storyboard)
-    print(f"Assets: {len(scenes)} scenes")
-    output_file = stitch_video(scenes)
-    print(f"Output ready: {output_file.exists() if output_file else False}")
+
+    storyboard = generate_storyboard(
+        "What happens at the edge of the observable universe?"
+    )
+
+    print(
+        f"Storyboard scenes: {len(storyboard.get('scenes', []))}"
+    )
+
+    processed_scenes = build_assets(storyboard)
+
+    print(f"Processed scenes: {len(processed_scenes)}")
+
+    final_output = stitch_video(processed_scenes)
+
+    print(f"Output exists: {final_output.exists()}")
+    print(f"Output size: {final_output.stat().st_size} bytes")
 
 
 if __name__ == "__main__":
