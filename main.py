@@ -5,17 +5,15 @@ import asyncio
 import requests
 import subprocess
 import edge_tts
-import google.generativeai as genai
+from google import genai
 
 # Retrieve API keys securely
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
-# Configure Gemini
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Initialize Gemini Client using modern SDK
+client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 BACKUP_KEYWORDS = [
     "deep space 4k", "black hole accretion", "spinning galaxy vertical", 
@@ -56,17 +54,14 @@ def generate_storyboard(topic):
     """
     user_prompt = f"Generate a storyboard about: {topic}"
     
-    # 1. Try Gemini First (using stable google-generativeai)
-    if GEMINI_API_KEY:
+    # 1. Try Gemini First (using modern google-genai SDK)
+    if client_gemini:
         try:
-            print("Attempting with Gemini API (gemini-1.5-flash)...")
-            model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                system_instruction=system_prompt
-            )
-            response = model.generate_content(
-                user_prompt,
-                generation_config={"response_mime_type": "application/json"}
+            print("Attempting with Gemini API (gemini-2.5-flash)...")
+            response = client_gemini.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=f"{system_prompt}\n\n{user_prompt}",
+                config={"response_mime_type": "application/json"}
             )
             return json.loads(extract_json_from_text(response.text))
         except Exception as e:
