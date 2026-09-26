@@ -8,7 +8,6 @@ from pathlib import Path
 
 import edge_tts
 import requests
-from PIL import Image, ImageDraw, ImageFont
 from google import genai
 
 
@@ -314,162 +313,151 @@ def build_assets(storyboard):
     return processed
 
 
-def create_caption_image(text):
-    image_width = 1080
-    image_height = 1920
-
-    image = Image.new(
-        "RGBA",
-        (image_width, image_height),
-        (0, 0, 0, 0),
-    )
-    draw = ImageDraw.Draw(image)
-
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-
-    try:
-        font = ImageFont.truetype(font_path, 50)
-    except Exception:
-        font = ImageFont.load_default()
-
-    lines = []
-    current = ""
-
-    for word in text.split():
-        candidate = f"{current} {word}".strip()
-
-        if len(candidate) <= 26:
-            current = candidate
-        else:
-            if current:
-                lines.append(current)
-            current = word
-
-    if current:
-        lines.append(current)
-
-    line_height = 65
-    total_height = len(lines) * line_height
-    start_y = image_height - total_height - 180
-
-    for index, line in enumerate(lines):
-        bbox = draw.textbbox((0, 0), line, font=font)
-        text_width = bbox[2] - bbox[0]
-
-        x = (image_width - text_width) // 2
-        y = start_y + (index * line_height)
-
-        draw.text(
-            (x + 3, y + 3),
-            line,
-            font=font,
-            fill=(0, 0, 0, 255),
-        )
-        draw.text(
-            (x, y),
-            line,
-            font=font,
-            fill=(255, 255, 255, 255),
-        )
-
-    temp_file = tempfile.NamedTemporaryFile(
-        suffix=".png",
-        delete=False,
-    )
-    temp_file.close()
-
-    image.save(temp_file.name)
-    return temp_file.name
-
-
 def add_caption_overlay(video_path, audio_path, caption_text, output_path):
-    caption_image = None
-
+    """Add caption with text overlay."""
     try:
-        caption_image = create_caption_image(caption_text)
+        # Write caption to file to avoid quoting issues
+        caption_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+        caption_file.write(caption_text)
+        caption_file.close()
+        
+        try:
+            # FFmpeg drawtext filter
+            filter_complex = (
+                f"[0:v]scale=1080:1920,"
+                f"drawtext=textfile='{caption_file.name}':"
+                f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                f"fontsize=48:"
+                f"fontcolor=white:"
+                f"bordercolor=black:"
+                f"borderw=3:"
+                f"x=(w-text_w)/2:"
+                f"y=h-250:"
+                f"line_spacing=10[vout]"
+            )
+            
+            command = [
+                "ffmpeg",
+                "-y",
+                "-i", video_path,
+                "-i", audio_path,
+                "-filter_complex", filter_complex,
+                "-map", "[vout]",
+                "-map", "1:a:0",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-pix_fmt", "yuv420p",
+                "-shortest",
+                output_path,
+            ]
+            
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            
+            if result.returncode != 0:
+                print(f"FFmpeg error: {result.stderr[-800:]}")
+                return False
+            
+            if not Path(output_path).exists() or Path(output_path).stat().st_size == 0:
+                print(f"Output missing")
+                return False
+            
+            print(f"✅ Caption added")
+            return True
+        
+        finally:
+            if Path(caption_file.name).exists():
+                os.remove(caption_file.name)
+    
+    except Exception as exc:
+        print(f"Caption failed: {exc}")
+        return False
 
+
+def create_crossfade(scene1, scene2, output_path, duration=1.0):
+    """Simple crossfade between scenes."""
+    try:
+        filter_complex = (
+            f"[0:v][1:v]xfade=transition=fade:duration={duration}:offset=0[v];"
+            f"[0:a][1:a]acrossfade=d={duration}[a]"
+        )
+        
         command = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            video_path,
-            "-loop",
-            "1",
-            "-i",
-            caption_image,
-            "-i",
-            audio_path,
-            "-filter_complex",
-            (
-                "[0:v]scale=1080:1920,"
-                "setsar=1[base];"
-                "[base][1:v]overlay=0:0:shortest=1[vout]"
-            ),
-            "-map",
-            "[vout]",
-            "-map",
-            "2:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-pix_fmt",
-            "yuv420p",
-            "-shortest",
+            "ffmpeg", "-y",
+            "-i", scene1,
+            "-i", scene2,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", "[a]",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-c:a", "aac",
             output_path,
         ]
-
+        
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            timeout=60,
         )
-
-        if result.returncode != 0:
-            print("Caption FFmpeg error:")
-            print(result.stderr[-2000:])
-            return False
-
-        if not Path(output_path).exists():
-            print(f"Caption output missing: {output_path}")
-            return False
-
-        return True
-
+        
+        return result.returncode == 0
+    
     except Exception as exc:
-        print(f"Caption generation failed: {exc}")
+        print(f"Crossfade failed: {exc}")
         return False
 
-    finally:
-        if caption_image and os.path.exists(caption_image):
-            os.remove(caption_image)
+
+def apply_transitions(scene_paths):
+    """Apply crossfade between scenes."""
+    if len(scene_paths) <= 1:
+        return scene_paths
+    
+    print(f"Applying transitions to {len(scene_paths)} scenes...")
+    
+    final_scenes = [scene_paths[0]]
+    
+    for i in range(1, len(scene_paths)):
+        output_path = f"output/videos/transition_{i}.mp4"
+        
+        if create_crossfade(final_scenes[-1], scene_paths[i], output_path, 0.75):
+            final_scenes.append(output_path)
+            print(f"✅ Transition {i} created")
+        else:
+            print(f"⚠️ Transition {i} skipped")
+            final_scenes.append(scene_paths[i])
+    
+    return final_scenes
 
 
 def stitch_video(processed_scenes):
+    """Create final reel."""
     if not processed_scenes:
-        raise RuntimeError("No scenes were processed.")
+        raise RuntimeError("No scenes processed.")
 
     scene_outputs = []
 
     for scene_id, video_path, audio_path, narration in processed_scenes:
         output_path = f"output/videos/captioned_{scene_id}.mp4"
 
-        print(f"Adding caption to scene {scene_id}")
+        print(f"Processing scene {scene_id}...")
 
-        if add_caption_overlay(
-            video_path,
-            audio_path,
-            narration,
-            output_path,
-        ):
+        if add_caption_overlay(video_path, audio_path, narration, output_path):
             scene_outputs.append(output_path)
 
     if not scene_outputs:
-        raise RuntimeError("No captioned scenes were created.")
+        raise RuntimeError("No captioned scenes created.")
+
+    # Apply transitions
+    if len(scene_outputs) > 1:
+        scene_outputs = apply_transitions(scene_outputs)
 
     concat_list = Path("output/concat_list.txt")
 
@@ -482,14 +470,10 @@ def stitch_video(processed_scenes):
     command = [
         "ffmpeg",
         "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(concat_list),
-        "-c",
-        "copy",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_list),
+        "-c", "copy",
         str(final_output),
     ]
 
@@ -500,36 +484,33 @@ def stitch_video(processed_scenes):
     )
 
     if result.returncode != 0:
-        print("Final concat FFmpeg error:")
-        print(result.stderr[-3000:])
-        raise RuntimeError("Final reel concat failed.")
+        print("Final concat error:")
+        print(result.stderr[-1500:])
+        raise RuntimeError("Final concat failed.")
 
     if not final_output.exists() or final_output.stat().st_size == 0:
-        raise RuntimeError("final_reel.mp4 was not created.")
+        raise RuntimeError("final_reel.mp4 not created.")
 
-    print(f"FINAL REEL READY: {final_output}")
+    print(f"🎉 FINAL REEL READY")
     return final_output
 
 
 def main():
-    print("Starting Autonomous Reel Production Engine...")
+    print("Starting Reel Production...")
 
     storyboard = generate_storyboard(
         "What happens at the edge of the observable universe?"
     )
 
-    print(
-        f"Storyboard scenes: {len(storyboard.get('scenes', []))}"
-    )
+    print(f"Scenes: {len(storyboard.get('scenes', []))}")
 
     processed_scenes = build_assets(storyboard)
 
-    print(f"Processed scenes: {len(processed_scenes)}")
+    print(f"Processed: {len(processed_scenes)}")
 
     final_output = stitch_video(processed_scenes)
 
-    print(f"Output exists: {final_output.exists()}")
-    print(f"Output size: {final_output.stat().st_size} bytes")
+    print(f"Done: {final_output.exists()}")
 
 
 if __name__ == "__main__":
