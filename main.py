@@ -9,19 +9,29 @@ from pathlib import Path
 import edge_tts
 import requests
 from google import genai
+from PIL import Image, ImageDraw, ImageFont
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-3.8-flash",
+)
+
 OPENROUTER_MODEL = os.environ.get(
     "OPENROUTER_MODEL",
     "google/gemma-3-27b-it:free",
 )
 
-client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+client_gemini = (
+    genai.Client(api_key=GEMINI_API_KEY)
+    if GEMINI_API_KEY
+    else None
+)
+
 
 BACKUP_KEYWORDS = [
     "deep space 4k",
@@ -53,9 +63,9 @@ def extract_json_from_text(text):
     end = text.rfind("}")
 
     if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in AI response.")
+        raise ValueError("No JSON object found.")
 
-    return text[start : end + 1].strip()
+    return text[start:end + 1].strip()
 
 
 def offline_storyboard(topic):
@@ -130,7 +140,9 @@ Return only valid JSON:
             response = client_gemini.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=f"{system_prompt}\n\n{user_prompt}",
-                config={"response_mime_type": "application/json"},
+                config={
+                    "response_mime_type": "application/json",
+                },
             )
 
             content = getattr(response, "text", None)
@@ -138,7 +150,9 @@ Return only valid JSON:
             if not content:
                 content = response.candidates[0].content.parts[0].text
 
-            data = json.loads(extract_json_from_text(content))
+            data = json.loads(
+                extract_json_from_text(content)
+            )
 
             if isinstance(data, dict) and data.get("scenes"):
                 return data
@@ -155,27 +169,42 @@ Return only valid JSON:
                 headers={
                     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/Mohinurking/cosmo-shorts-bot",
+                    "HTTP-Referer": (
+                        "https://github.com/"
+                        "Mohinurking/cosmo-shorts-bot"
+                    ),
                     "X-Title": "Cosmo Shorts Bot",
                 },
                 json={
                     "model": OPENROUTER_MODEL,
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
+                        {
+                            "role": "system",
+                            "content": system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": user_prompt,
+                        },
                     ],
-                    "response_format": {"type": "json_object"},
+                    "response_format": {
+                        "type": "json_object",
+                    },
                 },
                 timeout=30,
             )
 
             if not response.ok:
                 raise RuntimeError(
-                    f"HTTP {response.status_code}: {response.text[:500]}"
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:500]}"
                 )
 
             content = response.json()["choices"][0]["message"]["content"]
-            data = json.loads(extract_json_from_text(content))
+
+            data = json.loads(
+                extract_json_from_text(content)
+            )
 
             if isinstance(data, dict) and data.get("scenes"):
                 return data
@@ -195,6 +224,7 @@ async def generate_voiceover(text, output_file):
         text,
         "en-US-ChristopherNeural",
     )
+
     await voice.save(str(output_path))
 
 
@@ -203,19 +233,25 @@ def fetch_pexels_video(keyword, output_file):
         print("PEXELS_API_KEY is missing.")
         return False
 
-    headers = {"Authorization": PEXELS_API_KEY}
-    terms = [keyword] + random.sample(
+    headers = {
+        "Authorization": PEXELS_API_KEY,
+    }
+
+    search_terms = [keyword] + random.sample(
         BACKUP_KEYWORDS,
         len(BACKUP_KEYWORDS),
     )
 
-    for term in terms:
+    for term in search_terms:
         try:
             page = random.randint(1, 5)
+
             url = (
                 "https://api.pexels.com/videos/search"
                 f"?query={requests.utils.quote(term)}"
-                f"&orientation=portrait&per_page=10&page={page}"
+                "&orientation=portrait"
+                "&per_page=10"
+                f"&page={page}"
             )
 
             response = requests.get(
@@ -223,46 +259,57 @@ def fetch_pexels_video(keyword, output_file):
                 headers=headers,
                 timeout=20,
             )
+
             response.raise_for_status()
 
-            for video in response.json().get("videos", []):
+            videos = response.json().get("videos", [])
+
+            for video in videos:
                 video_id = video.get("id")
 
                 if video_id in used_video_ids:
                     continue
 
-                files = video.get("video_files") or []
+                video_files = video.get("video_files") or []
 
-                if not files:
+                if not video_files:
                     continue
 
-                selected = next(
+                selected_file = next(
                     (
                         item
-                        for item in files
+                        for item in video_files
                         if item.get("height", 0) >= 1280
                     ),
-                    files[0],
+                    video_files[0],
                 )
 
-                video_url = selected.get("link")
+                video_url = selected_file.get("link")
 
                 if not video_url:
                     continue
 
-                print(f"Downloading clip for: {term}")
+                print(f"Downloading Pexels video: {term}")
 
                 clip_response = requests.get(
                     video_url,
                     timeout=40,
                 )
+
                 clip_response.raise_for_status()
 
                 output_path = Path(output_file)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(clip_response.content)
+                output_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                output_path.write_bytes(
+                    clip_response.content
+                )
 
                 used_video_ids.add(video_id)
+
                 return True
 
         except Exception as exc:
@@ -276,15 +323,25 @@ def build_assets(storyboard):
     videos_dir = output_dir / "videos"
     audio_dir = output_dir / "audio"
 
-    videos_dir.mkdir(parents=True, exist_ok=True)
-    audio_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    processed = []
+    audio_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    processed_scenes = []
 
     for scene in storyboard.get("scenes", []):
         scene_id = scene["scene_id"]
         narration = scene["narration_text"]
-        keyword = scene.get("search_keyword", "space galaxy")
+        keyword = scene.get(
+            "search_keyword",
+            "space galaxy",
+        )
 
         audio_path = audio_dir / f"scene_{scene_id}.mp3"
         video_path = videos_dir / f"scene_{scene_id}.mp4"
@@ -297,11 +354,17 @@ def build_assets(storyboard):
                 )
             )
         except Exception as exc:
-            print(f"Voiceover failed for scene {scene_id}: {exc}")
+            print(
+                f"Voiceover failed for scene "
+                f"{scene_id}: {exc}"
+            )
             continue
 
-        if fetch_pexels_video(keyword, video_path):
-            processed.append(
+        if fetch_pexels_video(
+            keyword,
+            video_path,
+        ):
+            processed_scenes.append(
                 (
                     scene_id,
                     str(video_path),
@@ -310,171 +373,192 @@ def build_assets(storyboard):
                 )
             )
 
-    return processed
+    return processed_scenes
 
 
-def add_caption_overlay(video_path, audio_path, caption_text, output_path):
-    """Add caption with text overlay."""
-    try:
-        # Write caption to file to avoid quoting issues
-        caption_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-        caption_file.write(caption_text)
-        caption_file.close()
-        
-        try:
-            # FFmpeg drawtext filter
-            filter_complex = (
-                f"[0:v]scale=1080:1920,"
-                f"drawtext=textfile='{caption_file.name}':"
-                f"fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-                f"fontsize=48:"
-                f"fontcolor=white:"
-                f"bordercolor=black:"
-                f"borderw=3:"
-                f"x=(w-text_w)/2:"
-                f"y=h-250:"
-                f"line_spacing=10[vout]"
-            )
-            
-            command = [
-                "ffmpeg",
-                "-y",
-                "-i", video_path,
-                "-i", audio_path,
-                "-filter_complex", filter_complex,
-                "-map", "[vout]",
-                "-map", "1:a:0",
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-pix_fmt", "yuv420p",
-                "-shortest",
-                output_path,
-            ]
-            
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            
-            if result.returncode != 0:
-                print(f"FFmpeg error: {result.stderr[-800:]}")
-                return False
-            
-            if not Path(output_path).exists() or Path(output_path).stat().st_size == 0:
-                print(f"Output missing")
-                return False
-            
-            print(f"✅ Caption added")
-            return True
-        
-        finally:
-            if Path(caption_file.name).exists():
-                os.remove(caption_file.name)
-    
-    except Exception as exc:
-        print(f"Caption failed: {exc}")
-        return False
+def wrap_caption_text(
+    draw,
+    text,
+    font,
+    max_width,
+):
+    words = text.split()
+    lines = []
+    current_line = ""
 
-
-def create_crossfade(scene1, scene2, output_path, duration=1.0):
-    """Simple crossfade between scenes."""
-    try:
-        filter_complex = (
-            f"[0:v][1:v]xfade=transition=fade:duration={duration}:offset=0[v];"
-            f"[0:a][1:a]acrossfade=d={duration}[a]"
+    for word in words:
+        test_line = (
+            f"{current_line} {word}".strip()
         )
-        
-        command = [
-            "ffmpeg", "-y",
-            "-i", scene1,
-            "-i", scene2,
-            "-filter_complex", filter_complex,
-            "-map", "[v]",
-            "-map", "[a]",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-c:a", "aac",
-            output_path,
-        ]
-        
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=60,
+
+        bbox = draw.textbbox(
+            (0, 0),
+            test_line,
+            font=font,
         )
-        
-        return result.returncode == 0
-    
-    except Exception as exc:
-        print(f"Crossfade failed: {exc}")
-        return False
 
+        text_width = bbox[2] - bbox[0]
 
-def apply_transitions(scene_paths):
-    """Apply crossfade between scenes."""
-    if len(scene_paths) <= 1:
-        return scene_paths
-    
-    print(f"Applying transitions to {len(scene_paths)} scenes...")
-    
-    final_scenes = [scene_paths[0]]
-    
-    for i in range(1, len(scene_paths)):
-        output_path = f"output/videos/transition_{i}.mp4"
-        
-        if create_crossfade(final_scenes[-1], scene_paths[i], output_path, 0.75):
-            final_scenes.append(output_path)
-            print(f"✅ Transition {i} created")
+        if text_width <= max_width:
+            current_line = test_line
         else:
-            print(f"⚠️ Transition {i} skipped")
-            final_scenes.append(scene_paths[i])
-    
-    return final_scenes
+            if current_line:
+                lines.append(current_line)
+
+            current_line = word
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
 
 
-def stitch_video(processed_scenes):
-    """Create final reel."""
-    if not processed_scenes:
-        raise RuntimeError("No scenes processed.")
+def create_caption_image(caption_text):
+    """
+    Creates a transparent 1080x1920 caption layer.
 
-    scene_outputs = []
+    The caption is wrapped inside a safe width and
+    placed near the bottom without leaving the screen.
+    """
 
-    for scene_id, video_path, audio_path, narration in processed_scenes:
-        output_path = f"output/videos/captioned_{scene_id}.mp4"
+    canvas_width = 1080
+    canvas_height = 1920
 
-        print(f"Processing scene {scene_id}...")
+    image = Image.new(
+        "RGBA",
+        (canvas_width, canvas_height),
+        (0, 0, 0, 0),
+    )
 
-        if add_caption_overlay(video_path, audio_path, narration, output_path):
-            scene_outputs.append(output_path)
+    draw = ImageDraw.Draw(image)
 
-    if not scene_outputs:
-        raise RuntimeError("No captioned scenes created.")
+    font_path = (
+        "/usr/share/fonts/truetype/dejavu/"
+        "DejaVuSans-Bold.ttf"
+    )
 
-    # Apply transitions
-    if len(scene_outputs) > 1:
-        scene_outputs = apply_transitions(scene_outputs)
+    try:
+        font = ImageFont.truetype(
+            font_path,
+            44,
+        )
+    except Exception:
+        font = ImageFont.load_default()
 
-    concat_list = Path("output/concat_list.txt")
+    safe_width = 880
+    horizontal_padding = 42
+    vertical_padding = 28
+    line_spacing = 12
 
-    with concat_list.open("w") as file:
-        for path in scene_outputs:
-            file.write(f"file '{Path(path).resolve()}'\n")
+    lines = wrap_caption_text(
+        draw,
+        caption_text,
+        font,
+        safe_width,
+    )
 
-    final_output = Path("output/final_reel.mp4")
+    line_heights = []
 
+    for line in lines:
+        bbox = draw.textbbox(
+            (0, 0),
+            line,
+            font=font,
+        )
+        line_heights.append(
+            bbox[3] - bbox[1]
+        )
+
+    text_height = (
+        sum(line_heights)
+        + line_spacing * max(0, len(lines) - 1)
+    )
+
+    box_width = safe_width + horizontal_padding * 2
+    box_height = text_height + vertical_padding * 2
+
+    # Safe bottom position.
+    # The box never extends beyond 1920px.
+    box_x = (canvas_width - box_width) // 2
+    box_y = canvas_height - box_height - 190
+
+    box_y = max(
+        100,
+        min(
+            box_y,
+            canvas_height - box_height - 80,
+        ),
+    )
+
+    draw.rounded_rectangle(
+        (
+            box_x,
+            box_y,
+            box_x + box_width,
+            box_y + box_height,
+        ),
+        radius=28,
+        fill=(0, 0, 0, 145),
+    )
+
+    current_y = box_y + vertical_padding
+
+    for line, line_height in zip(
+        lines,
+        line_heights,
+    ):
+        bbox = draw.textbbox(
+            (0, 0),
+            line,
+            font=font,
+        )
+
+        text_width = bbox[2] - bbox[0]
+        text_x = (
+            canvas_width - text_width
+        ) // 2
+
+        # Black outline/shadow
+        draw.text(
+            (text_x + 3, current_y + 3),
+            line,
+            font=font,
+            fill=(0, 0, 0, 255),
+        )
+
+        # Main white text
+        draw.text(
+            (text_x, current_y),
+            line,
+            font=font,
+            fill=(255, 255, 255, 255),
+        )
+
+        current_y += line_height + line_spacing
+
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".png",
+        delete=False,
+    )
+
+    temp_file.close()
+
+    image.save(temp_file.name)
+
+    return temp_file.name
+
+
+def get_video_duration(video_path):
     command = [
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_list),
-        "-c", "copy",
-        str(final_output),
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:"
+        "nokey=1:novalue=1",
+        video_path,
     ]
 
     result = subprocess.run(
@@ -483,34 +567,316 @@ def stitch_video(processed_scenes):
         text=True,
     )
 
+    try:
+        return max(
+            1.0,
+            float(result.stdout.strip()),
+        )
+    except Exception:
+        return 8.0
+
+
+def add_caption_overlay(
+    video_path,
+    audio_path,
+    caption_text,
+    output_path,
+):
+    """
+    Add a safe-position caption layer with
+    fade-in and fade-out animation.
+    """
+
+    caption_image = None
+
+    try:
+        video_duration = get_video_duration(
+            video_path
+        )
+
+        caption_image = create_caption_image(
+            caption_text
+        )
+
+        fade_duration = min(
+            0.45,
+            video_duration / 4,
+        )
+
+        fade_out_start = max(
+            0.0,
+            video_duration - fade_duration,
+        )
+
+        filter_complex = (
+            "[0:v]"
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:"
+            "(ow-iw)/2:(oh-ih)/2,"
+            "setsar=1"
+            "[base];"
+
+            "[1:v]"
+            "format=rgba,"
+            f"fade=t=in:st=0:d={fade_duration}:alpha=1,"
+            f"fade=t=out:st={fade_out_start}:"
+            f"d={fade_duration}:alpha=1"
+            "[caption];"
+
+            "[base][caption]"
+            "overlay=0:0:shortest=1"
+            "[vout]"
+        )
+
+        command = [
+            "ffmpeg",
+            "-y",
+
+            # Main video
+            "-i",
+            video_path,
+
+            # Animated transparent caption image
+            "-loop",
+            "1",
+            "-i",
+            caption_image,
+
+            # Generated voiceover
+            "-i",
+            audio_path,
+
+            "-filter_complex",
+            filter_complex,
+
+            "-map",
+            "[vout]",
+            "-map",
+            "2:a:0",
+
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+
+            "-pix_fmt",
+            "yuv420p",
+            "-shortest",
+
+            output_path,
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        if result.returncode != 0:
+            print("Animated caption FFmpeg error:")
+            print(result.stderr[-2500:])
+            return False
+
+        output_file = Path(output_path)
+
+        if (
+            not output_file.exists()
+            or output_file.stat().st_size == 0
+        ):
+            print(
+                f"Caption output missing: {output_path}"
+            )
+            return False
+
+        print(
+            f"Animated caption created: {output_path}"
+        )
+
+        return True
+
+    except Exception as exc:
+        print(f"Caption generation failed: {exc}")
+        return False
+
+    finally:
+        if caption_image and os.path.exists(
+            caption_image
+        ):
+            os.remove(caption_image)
+
+
+def stitch_video(processed_scenes):
+    """
+    Join captioned scenes without transitions.
+    """
+
+    if not processed_scenes:
+        raise RuntimeError(
+            "No scenes were processed."
+        )
+
+    scene_outputs = []
+
+    for (
+        scene_id,
+        video_path,
+        audio_path,
+        narration,
+    ) in processed_scenes:
+        output_path = (
+            f"output/videos/captioned_{scene_id}.mp4"
+        )
+
+        print(
+            f"Processing scene {scene_id}..."
+        )
+
+        if add_caption_overlay(
+            video_path,
+            audio_path,
+            narration,
+            output_path,
+        ):
+            scene_outputs.append(output_path)
+
+    if not scene_outputs:
+        raise RuntimeError(
+            "No captioned scenes were created."
+        )
+
+    concat_list = Path(
+        "output/concat_list.txt"
+    )
+
+    with concat_list.open("w") as file:
+        for path in scene_outputs:
+            file.write(
+                f"file '{Path(path).resolve()}'\n"
+            )
+
+    final_output = Path(
+        "output/final_reel.mp4"
+    )
+
+    # No xfade and no transition.
+    # Re-encode all scenes consistently to avoid glitches.
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+
+        "-vf",
+        (
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:"
+            "(ow-iw)/2:(oh-ih)/2,"
+            "format=yuv420p"
+        ),
+
+        "-r",
+        "30",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+
+        "-c:a",
+        "aac",
+        "-ar",
+        "44100",
+        "-b:a",
+        "192k",
+
+        str(final_output),
+    ]
+
+    print(
+        "Creating final reel without transitions..."
+    )
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+
     if result.returncode != 0:
-        print("Final concat error:")
-        print(result.stderr[-1500:])
-        raise RuntimeError("Final concat failed.")
+        print("Final FFmpeg error:")
+        print(result.stderr[-3000:])
+        raise RuntimeError(
+            "Final reel creation failed."
+        )
 
-    if not final_output.exists() or final_output.stat().st_size == 0:
-        raise RuntimeError("final_reel.mp4 not created.")
+    if (
+        not final_output.exists()
+        or final_output.stat().st_size == 0
+    ):
+        raise RuntimeError(
+            "final_reel.mp4 was not created."
+        )
 
-    print(f"🎉 FINAL REEL READY")
+    print(
+        f"FINAL REEL READY: {final_output}"
+    )
+
     return final_output
 
 
 def main():
-    print("Starting Reel Production...")
-
-    storyboard = generate_storyboard(
-        "What happens at the edge of the observable universe?"
+    print(
+        "Starting Reel Production..."
     )
 
-    print(f"Scenes: {len(storyboard.get('scenes', []))}")
+    storyboard = generate_storyboard(
+        "What happens at the edge of "
+        "the observable universe?"
+    )
 
-    processed_scenes = build_assets(storyboard)
+    print(
+        "Storyboard scenes: "
+        f"{len(storyboard.get('scenes', []))}"
+    )
 
-    print(f"Processed: {len(processed_scenes)}")
+    processed_scenes = build_assets(
+        storyboard
+    )
 
-    final_output = stitch_video(processed_scenes)
+    print(
+        f"Processed scenes: "
+        f"{len(processed_scenes)}"
+    )
 
-    print(f"Done: {final_output.exists()}")
+    final_output = stitch_video(
+        processed_scenes
+    )
+
+    print(
+        f"Output exists: "
+        f"{final_output.exists()}"
+    )
+
+    print(
+        f"Output size: "
+        f"{final_output.stat().st_size} bytes"
+    )
 
 
 if __name__ == "__main__":
