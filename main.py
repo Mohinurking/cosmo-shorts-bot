@@ -246,12 +246,12 @@ def build_assets(storyboard):
 
         video_path = str(output_base / "videos" / f"scene_{s_id}.mp4")
         if fetch_pexels_video(keyword, video_path):
-            processed_scenes.append((s_id, video_path, audio_path, narration))
+            processed_scenes.append((s_id, video_path, narration))
 
     return processed_scenes
 
 
-def add_caption_overlay(video_path, audio_path, caption_text, output_path, duration=8):
+def add_caption_overlay(video_path, caption_text, output_path):
     """Add caption text overlay using ffmpeg and PIL."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -297,7 +297,6 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
             draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
         img.save(caption_image_path)
-        print(f"Caption image created: {caption_image_path}")
 
         cmd = [
             "ffmpeg", "-y",
@@ -313,16 +312,18 @@ def add_caption_overlay(video_path, audio_path, caption_text, output_path, durat
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
-            print(f"Caption added successfully: {output_path}")
+            print(f"✅ Caption added: {output_path}")
         else:
-            print(f"FFmpeg caption error: {result.stderr}")
+            print(f"❌ FFmpeg error: {result.stderr[:500]}")
 
         if os.path.exists(caption_image_path):
             os.remove(caption_image_path)
 
         return result.returncode == 0
     except Exception as exc:
-        print(f"Caption overlay exception: {exc}")
+        print(f"❌ Caption exception: {exc}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -334,30 +335,30 @@ def stitch_video(processed_scenes):
 
     scene_outputs = []
 
-    for s_id, v_path, a_path, narration in processed_scenes:
+    for s_id, v_path, narration in processed_scenes:
         try:
             captioned_path = f"output/videos/captioned_{s_id}.mp4"
             print(f"Processing scene {s_id}...")
-            if add_caption_overlay(v_path, a_path, narration, captioned_path):
+            if add_caption_overlay(v_path, narration, captioned_path):
                 scene_outputs.append(captioned_path)
-                print(f"✅ Scene {s_id} processed with caption.")
+                print(f"✅ Scene {s_id} done.")
             else:
                 print(f"❌ Failed to add caption to scene {s_id}")
         except Exception as exc:
-            print(f"Scene processing exception {s_id}: {exc}")
+            print(f"Scene exception {s_id}: {exc}")
 
     if not scene_outputs:
         print("❌ Error: No scene videos could be created.")
         return
 
-    print(f"Total scenes with captions: {len(scene_outputs)}")
+    print(f"Total scenes: {len(scene_outputs)}")
 
     concat_list = "output/concat_list.txt"
     with open(concat_list, "w") as f:
         for path in scene_outputs:
             f.write(f"file '{os.path.abspath(path)}'\n")
 
-    print(f"Concat list created: {concat_list}")
+    print(f"Concat list ready.")
 
     final_output = "output/final_reel.mp4"
     cmd = [
@@ -369,9 +370,9 @@ def stitch_video(processed_scenes):
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode == 0:
-        print(f"🎉 FINAL REEL READY: {final_output}")
+        print(f"🎉 FINAL REEL READY!")
     else:
-        print(f"❌ FFmpeg concat error: {result.stderr}")
+        print(f"❌ FFmpeg concat error: {result.stderr[:500]}")
 
     final_file = Path(final_output)
     if not final_file.exists():
@@ -384,11 +385,11 @@ def main():
     global storyboard
     print("Starting Autonomous Reel Production Engine...")
     storyboard = generate_storyboard("What happens at the edge of the observable universe?")
-    print(f"Storyboard generated with {len(storyboard.get('scenes', []))} scenes")
+    print(f"Storyboard: {len(storyboard.get('scenes', []))} scenes")
     scenes = build_assets(storyboard)
-    print(f"Assets built: {len(scenes)} scenes")
+    print(f"Assets: {len(scenes)} scenes")
     output_file = stitch_video(scenes)
-    print(f"Final output exists: {output_file.exists() if output_file else False}")
+    print(f"Output ready: {output_file.exists() if output_file else False}")
 
 
 if __name__ == "__main__":
