@@ -54,12 +54,12 @@ def generate_storyboard(topic):
     """
     user_prompt = f"Generate a storyboard about: {topic}"
     
-    # 1. Try Gemini First (using modern google-genai SDK)
+    # 1. Try Gemini First (using gemini-3.8-flash as suggested by error log)
     if client_gemini:
         try:
-            print("Attempting with Gemini API (gemini-2.5-flash)...")
+            print("Attempting with Gemini API (gemini-3.8-flash)...")
             response = client_gemini.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=f"{system_prompt}\n\n{user_prompt}",
                 config={"response_mime_type": "application/json"}
             )
