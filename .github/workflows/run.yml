@@ -14,33 +14,44 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install System Dependencies for MoviePy
-        run: |
-          sudo apt-get install -y libsm6 libxext6 libxrender-dev
-
       - name: Install Python Packages
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Run Script
         run: python main.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3.8-flash
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: google/gemma-3-27b-it:free
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
 
+      - name: Check Generated Files
+        if: always()
+        run: |
+          echo "Output directory:"
+          find output -maxdepth 3 -type f -ls 2>/dev/null || true
+
+          if [ ! -f output/final_reel.mp4 ]; then
+            echo "ERROR: output/final_reel.mp4 was not created."
+            exit 1
+          fi
+
+          ls -lh output/final_reel.mp4
+
       - name: Upload Video Artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: generated-video
           path: output/final_reel.mp4
+          if-no-files-found: error
